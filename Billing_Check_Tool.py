@@ -7,16 +7,28 @@ from openpyxl.worksheet.dimensions import ColumnDimension
 from datetime import datetime
 
 def process_files(prior_csv, current_csv, sales_csv, delayed_csv, client_device_csv, selected_month, selected_year, save_path):
-    # Load the CSV files into DataFrames
-    df_prior = pd.read_csv(prior_csv)
-    df_current = pd.read_csv(current_csv)
-    df_sales = pd.read_csv(sales_csv)
-    df_delayed = pd.read_csv(delayed_csv)
-    df_client_device = pd.read_csv(client_device_csv)
+    # Load the CSV files into DataFrames with specified dtype to avoid mixed types
+    df_prior = pd.read_csv(prior_csv, dtype=str)
+    df_current = pd.read_csv(current_csv, dtype=str)
+    df_sales = pd.read_csv(sales_csv, dtype=str)
+    df_delayed = pd.read_csv(delayed_csv, dtype=str)
+    df_client_device = pd.read_csv(client_device_csv, dtype=str, skiprows=1)  # Skip the first line
+
+    # Strip leading/trailing spaces from column names
+    df_prior.columns = df_prior.columns.str.strip()
+    df_current.columns = df_current.columns.str.strip()
+    df_sales.columns = df_sales.columns.str.strip()
+    df_delayed.columns = df_delayed.columns.str.strip()
+    df_client_device.columns = df_client_device.columns.str.strip()
+
+    # Convert Quantity and TotalDue columns to numeric
+    df_current['Quantity'] = pd.to_numeric(df_current['Quantity'])
+    df_current['TotalDue'] = pd.to_numeric(df_current['TotalDue'])
+    df_prior['Quantity'] = pd.to_numeric(df_prior['Quantity'])
 
     # Consolidate Current month data
     df_current_consolidated = df_current.groupby(
-        ['SabreCode', 'BranchName', 'ItemCode', 'BillingAmount']
+        ['CustomerCode', 'BranchName', 'ItemCode', 'BillingAmount']
     ).agg(
         Quantity_Current=('Quantity', 'sum'),
         TotalDue=('TotalDue', 'sum')
@@ -24,10 +36,16 @@ def process_files(prior_csv, current_csv, sales_csv, delayed_csv, client_device_
 
     # Consolidate Prior month data
     df_prior_consolidated = df_prior.groupby(
-        ['SabreCode', 'BranchName', 'ItemCode', 'BillingAmount']
+        ['CustomerCode', 'BranchName', 'ItemCode', 'BillingAmount']
     ).agg(
         Quantity_Previous=('Quantity', 'sum')
     ).reset_index()
+
+    # Convert Quantity and BillingAmount columns to numeric
+    df_current_consolidated['Quantity_Current'] = pd.to_numeric(df_current_consolidated['Quantity_Current'])
+    df_prior_consolidated['Quantity_Previous'] = pd.to_numeric(df_prior_consolidated['Quantity_Previous'])
+    df_current_consolidated['BillingAmount'] = pd.to_numeric(df_current_consolidated['BillingAmount'])
+    df_prior_consolidated['BillingAmount'] = pd.to_numeric(df_prior_consolidated['BillingAmount'])
 
     # Merge the DataFrames on common columns
     df_merged = pd.merge(
@@ -40,6 +58,9 @@ def process_files(prior_csv, current_csv, sales_csv, delayed_csv, client_device_
     # Calculate the 'Dif' column
     df_merged['Dif'] = df_merged['Quantity_Current'] - df_merged['Quantity_Previous'].fillna(0)
 
+    # Convert 'Qty' column to numeric to ensure proper summation
+    df_sales['Qty'] = pd.to_numeric(df_sales['Qty'], errors='coerce').fillna(0)
+
     # Consolidate Sales data
     df_sales_consolidated = df_sales.groupby(
         ['SabreCode', 'TechtoolCode']
@@ -47,8 +68,15 @@ def process_files(prior_csv, current_csv, sales_csv, delayed_csv, client_device_
         Sales_Qty=('Qty', 'sum')
     ).reset_index()
 
+    # Clean 'Sales_Qty' column to remove or replace invalid values
+    df_sales_consolidated['Sales_Qty'] = pd.to_numeric(df_sales_consolidated['Sales_Qty'], errors='coerce').fillna(0)
+
+    # Explicitly cast Sales_Qty to float
+    df_sales_consolidated['Sales_Qty'] = df_sales_consolidated['Sales_Qty'].astype(float)
+
     # Merge Sales data into the merged DataFrame
     df_merged['Sales'] = 0  # Initialize the Sales column
+    df_merged['Sales'] = df_merged['Sales'].astype(float)  # Explicitly cast to float
     for idx, row in df_merged.iterrows():
         if row['Dif'] > 0:
             sales_data = df_sales_consolidated[
@@ -67,7 +95,13 @@ def process_files(prior_csv, current_csv, sales_csv, delayed_csv, client_device_
 
     # Add 'Actual added Current month' column
     selected_date = f"{selected_year}-{int(selected_month):02d}"
-    df_client_device['ManufactureDate'] = pd.to_datetime(df_client_device['ManufactureDate']).dt.to_period('M')
+    
+    # Ensure 'ManufactureDate' column exists
+    if 'ManufactureDate' in df_client_device.columns:
+        df_client_device['ManufactureDate'] = pd.to_datetime(df_client_device['ManufactureDate']).dt.to_period('M')
+    else:
+        messagebox.showerror("Error", "'ManufactureDate' column not found in Client Device CSV.")
+        return
     
     def calculate_actual_added(row):
         if row['Dif'] > 0:
